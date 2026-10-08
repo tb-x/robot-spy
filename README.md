@@ -18,15 +18,18 @@ It is one `index.html` plus the sound clips in `assets/`, with no build step. [t
 python -m http.server 5203
 ```
 
-Then open http://localhost:5203. Opened straight from disk the game still works, but the browser won't load the clips: you hear the built-in synthesized sounds, and the spoken lines and the city background are silent.
+Then open http://localhost:5203. Opened straight from disk the game still works, but the browser won't load the clips: you hear the built-in synthesized sounds, and the spoken lines are silent.
+
+During a search a little spy tune plays. It's made in the browser as the game runs, so it never repeats exactly, gets a bit faster in the last 10 seconds, and dips while the voice is talking. The sound button mutes it with everything else.
 
 ## Sound knobs
 
-At the top of the sound section in `index.html`:
+At the top of the sound and music sections in `index.html`:
 
 - `CLIP_VOL` and `VOICE_VOL`: how loud the sound effects and the spoken lines are (0 to 1).
-- `CITY_VOL`: how loud the neon-city background is during a search.
 - `CLIP_TRIM`: per-clip volume trims that even out the clips. Lower a number if a sound is too loud.
+- `MUSIC_VOL`: how loud the music is; `MUSIC_DUCK`: how far it dips under the voice.
+- `MUSIC_BPM` and `MUSIC_HURRY`: the tempo, and how much faster it gets in the last 10 seconds.
 - `ASSET_V`: bump it after replacing any file in `assets/`, so phones don't keep the old one.
 
 ## Audio credits
@@ -34,6 +37,6 @@ At the top of the sound section in `index.html`:
 Voices and sounds: [elevenlabs.io](https://elevenlabs.io). All clips were made on 2026-10-08 with an ElevenLabs **free** plan, so they may only be used non-commercially and must credit ElevenLabs. They are not covered by any licence on this game's code.
 
 - **Spoken lines** (`assets/say-*.mp3`, 12 clips): voice "Roger", model Eleven Multilingual v2. A briefing per level, the wrong-tap and "so close" lines, two "found it" lines, the scan hint, the five-seconds warning and the time's-up line.
-- **Sound effects** (`assets/sfx-*.mp3`, 6 clips): ElevenLabs Sound Effects. Error buzzer, success jingle, radar scan, power-down, power-up chime, and the looping neon-city background.
+- **Sound effects** (`assets/sfx-*.mp3`, 5 clips): ElevenLabs Sound Effects. Error buzzer, success jingle, radar scan, power-down and power-up chime.
 
-The button tap and the last-five-seconds tick are still synthesized in the browser.
+The music, the button tap and the last-five-seconds tick are synthesized in the browser.

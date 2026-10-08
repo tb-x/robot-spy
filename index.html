@@ -1865,20 +1865,19 @@ function pickRobot(px, py) {
 
 /* ================= sound ================= */
 // ElevenLabs clips from assets/. Each effect falls back to its synthesized version when a clip can't load
-// (e.g. opened from file://); the spoken lines and the city loop are clip-only.
+// (e.g. opened from file://); the spoken lines are clip-only. The background music is synthesized (see Music).
 const ASSET_V = 1;            // bump after replacing any file in assets/
 const CLIP_VOL = 0.8;         // sound effect clips
 const VOICE_VOL = 1;          // spoken lines
-const CITY_VOL = 0.15;        // the neon-city loop under the search
 const CLIP_TRIM = { 'sfx-go': 0.6, 'sfx-over': 0.6 };   // per-clip level trims, measured so the clips sit near the voice's loudness
 const CLIPS = [
-  'sfx-wrong', 'sfx-found', 'sfx-scan', 'sfx-over', 'sfx-go', 'sfx-city',
+  'sfx-wrong', 'sfx-found', 'sfx-scan', 'sfx-over', 'sfx-go',
   'say-brief-1', 'say-brief-2', 'say-brief-3', 'say-brief-5', 'say-wrong-1', 'say-wrong-2', 'say-close',
   'say-found-1', 'say-found-2', 'say-scan', 'say-hurry', 'say-timeout',
 ];
 const Sound = {
   ctx: null, muted: store.get('robotspy.muted', false),
-  raw: {}, decoded: {}, clips: {}, voice: null, city: null,   // raw bytes start loading now; decoding needs the first tap
+  raw: {}, decoded: {}, clips: {}, voice: null,   // raw bytes start loading now; decoding needs the first tap
   init() {
     if (!this.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
@@ -1898,20 +1897,9 @@ const Sound = {
     if (!this.clips[name]) { this.decoded[name]?.then(buf => { if (buf) this.say(name); }); return; }
     if (this.voice) { try { this.voice.stop(); } catch {} }
     this.voice = this.clip(name, VOICE_VOL);
+    if (this.voice) Music.duck(this.voice.buffer.duration);
   },
-  hush() { if (this.voice) { try { this.voice.stop(); } catch {} this.voice = null; } this.cityStop(); },
-  cityStart() {
-    const buf = this.clips['sfx-city']; if (this.city || this.muted || !this.ctx || !buf) return;
-    const s = this.ctx.createBufferSource(), g = this.ctx.createGain(), t = this.ctx.currentTime;
-    s.buffer = buf; s.loop = true; s.loopStart = 0.05; s.loopEnd = buf.duration - 0.05;   // skip the MP3 padding so the loop has no gap
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(CITY_VOL * (CLIP_TRIM['sfx-city'] ?? 1), t + 1.2);
-    s.connect(g).connect(this.ctx.destination); s.start(); this.city = { s, g };
-  },
-  cityStop() {
-    if (!this.city) return; const { s, g } = this.city, t = this.ctx.currentTime;
-    g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6); s.stop(t + 0.65); this.city = null;
-  },
+  hush() { if (this.voice) { try { this.voice.stop(); } catch {} this.voice = null; } Music.stop(0.1); },
   tone(f, d, type = 'sine', v = 0.12, delay = 0, f2) {
     if (this.muted || !this.ctx) return;
     const t = this.ctx.currentTime + delay, o = this.ctx.createOscillator(), g = this.ctx.createGain();
@@ -1929,6 +1917,75 @@ const Sound = {
   go() { if (this.clip('sfx-go')) return; this.tone(440, 0.1, 'triangle', 0.07); this.tone(880, 0.16, 'triangle', 0.07, 0.1); },
 };
 for (const n of CLIPS) Sound.raw[n] = fetch(`assets/${n}.mp3?v=${ASSET_V}`).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+
+/* ================= music ================= */
+// A synthesized spy groove under the search: staccato bass, plucked arpeggio, soft kick and tick, and a
+// melody re-rolled every bar so it never repeats exactly. Only clean tones, no noise (no hiss).
+// A lookahead scheduler queues each 16th note ~0.15 s ahead of the audio clock.
+const MUSIC_VOL = 0.2;        // overall music level
+const MUSIC_DUCK = 0.35;      // music level (fraction) while a spoken line plays
+const MUSIC_BPM = 104;        // tempo
+const MUSIC_HURRY = 1.15;     // tempo multiplier in the last 10 seconds
+const MUSIC_BARS = [          // bass root and arpeggio notes (MIDI) for each bar of the 4-bar chord loop: Am, Am, F, E
+  { bass: 45, arp: [57, 60, 64, 67] },
+  { bass: 45, arp: [57, 60, 64, 69] },
+  { bass: 41, arp: [57, 60, 65, 69] },
+  { bass: 40, arp: [56, 59, 64, 68] },
+];
+const MUSIC_BASS = [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0];   // which 16th notes of a bar play bass
+const MUSIC_TUNE = [69, 72, 74, 76, 79, 81];                           // A minor pentatonic for the melody
+const midiHz = m => 440 * 2 ** ((m - 69) / 12);
+const Music = {
+  out: null, timer: 0, step: 0, next: 0, on: false, tune: [],
+  start() {
+    const ctx = Sound.ctx; if (this.on || Sound.muted || !ctx) return;
+    if (!this.out) { this.out = ctx.createGain(); this.out.gain.value = 0.0001; this.out.connect(ctx.destination); }
+    const g = this.out.gain, t = ctx.currentTime;
+    g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t); g.exponentialRampToValueAtTime(MUSIC_VOL, t + 1.5);
+    this.on = true; this.step = 0; this.next = t + 0.1;
+    this.timer = setInterval(() => this.schedule(), 25);
+  },
+  stop(fade = 0.8) {
+    if (!this.on) return; this.on = false; clearInterval(this.timer);
+    const g = this.out.gain, t = Sound.ctx.currentTime;
+    g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t); g.exponentialRampToValueAtTime(0.0001, t + fade);
+  },
+  duck(secs) {                 // dip under a spoken line, then come back up
+    if (!this.on) return; const g = this.out.gain, t = Sound.ctx.currentTime;
+    g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t);
+    g.exponentialRampToValueAtTime(MUSIC_VOL * MUSIC_DUCK, t + 0.12);
+    g.setValueAtTime(MUSIC_VOL * MUSIC_DUCK, t + secs); g.exponentialRampToValueAtTime(MUSIC_VOL, t + secs + 0.6);
+  },
+  schedule() {
+    const ctx = Sound.ctx;
+    if (this.next < ctx.currentTime - 0.05) this.next = ctx.currentTime + 0.05;   // timer was held up: skip missed notes rather than play them in a burst
+    while (this.next < ctx.currentTime + 0.15) {
+      this.play(this.step, this.next);
+      this.next += 60 / (MUSIC_BPM * (game.time <= 10 ? MUSIC_HURRY : 1)) / 4;
+      this.step++;
+    }
+  },
+  play(i, t) {
+    const s = i % 16, bar = MUSIC_BARS[Math.floor(i / 16) % MUSIC_BARS.length];
+    if (s === 0) this.tune = Array.from({ length: 8 }, () => Math.random() < 0.3 ? pick(MUSIC_TUNE) : 0);   // new melody each bar
+    if (s === 0 || s === 8) this.note(120, t, 0.16, 'sine', 0.55, 0, 42);        // soft kick
+    if (s === 4 || s === 12) this.note(2600, t, 0.025, 'triangle', 0.035);        // tick
+    if (MUSIC_BASS[s]) this.note(midiHz(bar.bass), t, 0.13, 'square', 0.16, 700);
+    if (s % 2 === 0) this.note(midiHz(bar.arp[(s / 2) % 4] + (s >= 8 ? 12 : 0)), t, 0.09, 'triangle', 0.07);
+    if (s % 2 === 0 && this.tune[s / 2]) this.note(midiHz(this.tune[s / 2]), t, 0.24, 'sine', 0.07);
+  },
+  note(f, t, d, type, v, cutoff = 0, f2 = 0) {
+    const ctx = Sound.ctx, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    let node = o;
+    if (cutoff) { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = cutoff; o.connect(lp); node = lp; }
+    node.connect(g).connect(this.out); o.start(t); o.stop(t + d + 0.03);
+  },
+};
+document.addEventListener('visibilitychange', () => {   // background tabs throttle timers, so pause rather than stutter
+  if (document.hidden) Music.stop(0.2); else if (game.state === 'play' && !Sound.muted) Music.start();
+});
 
 /* ================= preview renderer ================= */
 const pvCanvas = document.createElement('canvas'); pvCanvas.className = 'pv';
@@ -2037,7 +2094,7 @@ function beginPlay() {
   hud.hidden = false;
   game.state = 'play';
   Sound.go();
-  Sound.cityStart();
+  Music.start();
   if (game.level === 1) toast('Pinch to zoom in · drag to pan · tap the match', 'info', 2800);
 }
 function handleTap(x, y) {
@@ -2065,7 +2122,7 @@ function onFound(r) {
   spawnRing(r.pos.x, r.pos.z, '#6bffb8', { r0: 0.2, r1: 2, life: 1 });
   burst(r.pos.x, 0.8, r.pos.z);
   flyTo(r.pos.x, r.pos.z, Math.min(cam.span, 4.5));
-  Sound.cityStop();
+  Music.stop();
   Sound.found();
   Sound.say(game.level % 2 ? 'say-found-1' : 'say-found-2');
   toast('Unit recovered!', 'good', 1300);
@@ -2087,7 +2144,7 @@ function onTimeout() {
   r.pause = 1e9;
   spawnRing(r.pos.x, r.pos.z, '#ffc34d', { persist: true, life: 1e9, r0: 0.45, follow: r });
   flyTo(r.pos.x, r.pos.z, Math.min(cam.span, 4.5));
-  Sound.cityStop();
+  Music.stop();
   Sound.over();
   Sound.say('say-timeout');
   if (game.score > game.best) { game.best = game.score; store.set('robotspy.best', game.best); }
@@ -2137,7 +2194,7 @@ $('scanBtn').addEventListener('click', scan);
 function syncMute() { $('icoSound').hidden = Sound.muted; $('icoMute').hidden = !Sound.muted; $('muteBtn').setAttribute('aria-label', Sound.muted ? 'Unmute sound' : 'Mute sound'); }
 $('muteBtn').addEventListener('click', () => {
   Sound.muted = !Sound.muted; store.set('robotspy.muted', Sound.muted); Sound.init(); syncMute(); Sound.tap();
-  if (Sound.muted) Sound.hush(); else if (game.state === 'play') Sound.cityStart();
+  if (Sound.muted) Sound.hush(); else if (game.state === 'play') Music.start();
 });
 syncMute();
 
