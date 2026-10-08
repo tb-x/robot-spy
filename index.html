@@ -164,6 +164,7 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   box-shadow:0 0 26px rgba(62,232,255,.35);
 }
 .primary:active{transform:scale(.98)}
+.sheet p.credit{font:11px/1.2 Verdana,Tahoma,sans-serif;text-align:center;opacity:.7}
 .best{font:600 12px/1 var(--display);letter-spacing:.12em;color:var(--muted);text-transform:uppercase;text-align:center}
 
 @media (max-height:640px){
@@ -230,6 +231,7 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
     <div class="kvs" id="shStats" hidden></div>
     <button class="primary" id="shBtn">Start patrol</button>
     <div class="best" id="shBest" hidden></div>
+    <p class="credit">Voices &amp; sounds: elevenlabs.io</p>
   </section>
 </div>
 
@@ -1862,11 +1864,53 @@ function pickRobot(px, py) {
 }
 
 /* ================= sound ================= */
+// ElevenLabs clips from assets/. Each effect falls back to its synthesized version when a clip can't load
+// (e.g. opened from file://); the spoken lines and the city loop are clip-only.
+const ASSET_V = 1;            // bump after replacing any file in assets/
+const CLIP_VOL = 0.8;         // sound effect clips
+const VOICE_VOL = 1;          // spoken lines
+const CITY_VOL = 0.15;        // the neon-city loop under the search
+const CLIP_TRIM = { 'sfx-go': 0.6, 'sfx-over': 0.6 };   // per-clip level trims, measured so the clips sit near the voice's loudness
+const CLIPS = [
+  'sfx-wrong', 'sfx-found', 'sfx-scan', 'sfx-over', 'sfx-go', 'sfx-city',
+  'say-brief-1', 'say-brief-2', 'say-brief-3', 'say-brief-5', 'say-wrong-1', 'say-wrong-2', 'say-close',
+  'say-found-1', 'say-found-2', 'say-scan', 'say-hurry', 'say-timeout',
+];
 const Sound = {
   ctx: null, muted: store.get('robotspy.muted', false),
+  raw: {}, decoded: {}, clips: {}, voice: null, city: null,   // raw bytes start loading now; decoding needs the first tap
   init() {
-    if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) this.ctx = new AC(); }
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      this.ctx = new AC();
+      for (const n of CLIPS) this.decoded[n] = this.raw[n].then(b => b && new Promise((res, rej) => this.ctx.decodeAudioData(b, res, rej)))
+        .then(buf => { if (buf) this.clips[n] = buf; return buf; }).catch(() => null);
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  clip(name, vol = CLIP_VOL) {   // plays a loaded clip; returns null if it isn't loaded so the caller can synthesize
+    const buf = this.clips[name]; if (this.muted || !this.ctx || !buf) return null;
+    const s = this.ctx.createBufferSource(), g = this.ctx.createGain(); s.buffer = buf; g.gain.value = vol * (CLIP_TRIM[name] ?? 1);
+    s.connect(g).connect(this.ctx.destination); s.start(); return s;
+  },
+  say(name) {               // spoken line; waits for its clip if it's still decoding (the first brief comes right after the first tap)
+    if (this.muted || !this.ctx) return;
+    if (!this.clips[name]) { this.decoded[name]?.then(buf => { if (buf) this.say(name); }); return; }
+    if (this.voice) { try { this.voice.stop(); } catch {} }
+    this.voice = this.clip(name, VOICE_VOL);
+  },
+  hush() { if (this.voice) { try { this.voice.stop(); } catch {} this.voice = null; } this.cityStop(); },
+  cityStart() {
+    const buf = this.clips['sfx-city']; if (this.city || this.muted || !this.ctx || !buf) return;
+    const s = this.ctx.createBufferSource(), g = this.ctx.createGain(), t = this.ctx.currentTime;
+    s.buffer = buf; s.loop = true; s.loopStart = 0.05; s.loopEnd = buf.duration - 0.05;   // skip the MP3 padding so the loop has no gap
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(CITY_VOL * (CLIP_TRIM['sfx-city'] ?? 1), t + 1.2);
+    s.connect(g).connect(this.ctx.destination); s.start(); this.city = { s, g };
+  },
+  cityStop() {
+    if (!this.city) return; const { s, g } = this.city, t = this.ctx.currentTime;
+    g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6); s.stop(t + 0.65); this.city = null;
   },
   tone(f, d, type = 'sine', v = 0.12, delay = 0, f2) {
     if (this.muted || !this.ctx) return;
@@ -1877,13 +1921,14 @@ const Sound = {
     o.connect(g).connect(this.ctx.destination); o.start(t); o.stop(t + d + 0.03);
   },
   tap() { this.tone(720, 0.05, 'triangle', 0.05); },
-  wrong() { this.tone(200, 0.28, 'sawtooth', 0.07, 0, 90); },
-  found() { [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.2, 'triangle', 0.09, i * 0.08)); },
-  scan() { this.tone(260, 0.7, 'sine', 0.08, 0, 1300); this.tone(520, 0.5, 'sine', 0.04, 0.15, 1800); },
+  wrong() { if (this.clip('sfx-wrong')) return; this.tone(200, 0.28, 'sawtooth', 0.07, 0, 90); },
+  found() { if (this.clip('sfx-found')) return; [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.2, 'triangle', 0.09, i * 0.08)); },
+  scan() { if (this.clip('sfx-scan')) return; this.tone(260, 0.7, 'sine', 0.08, 0, 1300); this.tone(520, 0.5, 'sine', 0.04, 0.15, 1800); },
   tick() { this.tone(1100, 0.05, 'square', 0.035); },
-  over() { [392, 330, 262, 196].forEach((f, i) => this.tone(f, 0.32, 'triangle', 0.09, i * 0.17)); },
-  go() { this.tone(440, 0.1, 'triangle', 0.07); this.tone(880, 0.16, 'triangle', 0.07, 0.1); },
+  over() { if (this.clip('sfx-over')) return; [392, 330, 262, 196].forEach((f, i) => this.tone(f, 0.32, 'triangle', 0.09, i * 0.17)); },
+  go() { if (this.clip('sfx-go')) return; this.tone(440, 0.1, 'triangle', 0.07); this.tone(880, 0.16, 'triangle', 0.07, 0.1); },
 };
+for (const n of CLIPS) Sound.raw[n] = fetch(`assets/${n}.mp3?v=${ASSET_V}`).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
 
 /* ================= preview renderer ================= */
 const pvCanvas = document.createElement('canvas'); pvCanvas.className = 'pv';
@@ -1926,7 +1971,7 @@ function renderPreview(dt, t) {
 }
 
 /* ================= game ================= */
-const game = { state: 'intro', level: 1, score: 0, time: 0, timeMax: 60, target: null, serial: '', best: store.get('robotspy.best', 0), lastSec: 99 };
+const game = { state: 'intro', level: 1, score: 0, time: 0, timeMax: 60, target: null, serial: '', best: store.get('robotspy.best', 0), lastSec: 99, wrongs: 0 };
 const hud = $('hud'), sheetWrap = $('sheetWrap'), sheet = $('sheet');
 let sheetAction = null, toastTimer = 0;
 
@@ -1984,6 +2029,7 @@ function startLevel(L) {
     btn: `Start search · ${prm.time} s`,
     onBtn: beginPlay,
   });
+  Sound.say(L === 1 ? 'say-brief-1' : L === 2 ? 'say-brief-2' : L <= 4 ? 'say-brief-3' : 'say-brief-5');
 }
 function beginPlay() {
   hideSheet();
@@ -1991,6 +2037,7 @@ function beginPlay() {
   hud.hidden = false;
   game.state = 'play';
   Sound.go();
+  Sound.cityStart();
   if (game.level === 1) toast('Pinch to zoom in · drag to pan · tap the match', 'info', 2800);
 }
 function handleTap(x, y) {
@@ -2003,6 +2050,7 @@ function handleTap(x, y) {
   r.shake = 1;
   spawnRing(r.pos.x, r.pos.z, '#ff3d9a', { r0: 0.15, r1: 0.6, life: 0.7 });
   Sound.wrong();
+  Sound.say(match === 3 ? 'say-close' : ++game.wrongs % 2 ? 'say-wrong-1' : 'say-wrong-2');
   const hint = match === 3 ? 'So close: 3 of 4 parts match' : match === 0 ? 'No parts match' : `${match} of 4 parts match`;
   toast(`Not it. ${hint} · −5 s`, 'bad', 1700);
 }
@@ -2017,7 +2065,9 @@ function onFound(r) {
   spawnRing(r.pos.x, r.pos.z, '#6bffb8', { r0: 0.2, r1: 2, life: 1 });
   burst(r.pos.x, 0.8, r.pos.z);
   flyTo(r.pos.x, r.pos.z, Math.min(cam.span, 4.5));
+  Sound.cityStop();
   Sound.found();
+  Sound.say(game.level % 2 ? 'say-found-1' : 'say-found-2');
   toast('Unit recovered!', 'good', 1300);
   updateHud(true);
   setTimeout(() => {
@@ -2037,7 +2087,9 @@ function onTimeout() {
   r.pause = 1e9;
   spawnRing(r.pos.x, r.pos.z, '#ffc34d', { persist: true, life: 1e9, r0: 0.45, follow: r });
   flyTo(r.pos.x, r.pos.z, Math.min(cam.span, 4.5));
+  Sound.cityStop();
   Sound.over();
+  Sound.say('say-timeout');
   if (game.score > game.best) { game.best = game.score; store.set('robotspy.best', game.best); }
   setTimeout(() => {
     if (game.state !== 'over') return;
@@ -2060,6 +2112,7 @@ function scan() {
   spawnRing(x, z, '#ffc34d', { r0: 0.3, r1: 3, life: 0.9 });
   flyTo(x, z, Math.min(cam.span, 7));
   Sound.scan();
+  Sound.say('say-scan');
   toast('Target is inside the amber ring', 'info', 1800);
 }
 
@@ -2082,7 +2135,10 @@ $('rotL').addEventListener('click', () => { cam.azGoal -= HP; Sound.tap(); });
 $('rotR').addEventListener('click', () => { cam.azGoal += HP; Sound.tap(); });
 $('scanBtn').addEventListener('click', scan);
 function syncMute() { $('icoSound').hidden = Sound.muted; $('icoMute').hidden = !Sound.muted; $('muteBtn').setAttribute('aria-label', Sound.muted ? 'Unmute sound' : 'Mute sound'); }
-$('muteBtn').addEventListener('click', () => { Sound.muted = !Sound.muted; store.set('robotspy.muted', Sound.muted); Sound.init(); syncMute(); Sound.tap(); });
+$('muteBtn').addEventListener('click', () => {
+  Sound.muted = !Sound.muted; store.set('robotspy.muted', Sound.muted); Sound.init(); syncMute(); Sound.tap();
+  if (Sound.muted) Sound.hush(); else if (game.state === 'play') Sound.cityStart();
+});
 syncMute();
 
 /* ================= loop ================= */
@@ -2092,7 +2148,7 @@ function update(dt) {
   if (game.state === 'play') {
     game.time -= dt;
     const sec = Math.ceil(game.time);
-    if (sec !== game.lastSec) { game.lastSec = sec; if (sec <= 5 && sec > 0) Sound.tick(); }
+    if (sec !== game.lastSec) { game.lastSec = sec; if (sec <= 5 && sec > 0) Sound.tick(); if (sec === 5) Sound.say('say-hurry'); }
     if (game.time <= 0) { game.time = 0; onTimeout(); }
   }
   updateCamAnim(dt);
