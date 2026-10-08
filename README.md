@@ -22,6 +22,12 @@ Then open http://localhost:5203. Opened straight from disk the game still works,
 
 During a search a little spy tune plays. It's made in the browser as the game runs, so it never repeats exactly, gets a bit faster in the last 10 seconds, and dips while the voice is talking. The sound button mutes it with everything else.
 
+## Play offline (add to Home Screen)
+
+On iPhone or iPad, open the game in Safari, tap **Share → Add to Home Screen**, then open it once from the new icon while online. After that it starts full screen and works without internet. Changes I publish arrive on their own: the next online launch downloads them and the one after shows them.
+
+(How: `manifest.webmanifest` gives the icon and full-screen mode; `sw.js`, a service worker, keeps a copy of every file the game uses, including three.js, the font and the sound clips.)
+
 ## Sound knobs
 
 At the top of the sound and music sections in `index.html`:
