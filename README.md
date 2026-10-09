@@ -7,6 +7,7 @@ A crowd of robots walks the streets of a neon city at night. The WANTED poster s
 - Drag to pan, pinch to zoom in on the crowd, and rotate the city to look behind towers. Hidden robots glow blue through walls.
 - A wrong tap costs 5 seconds.
 - **Scan** marks the rough area of the target for 10 seconds, at the cost of 10 seconds.
+- 🏠 in the corner goes back to the list of all games.
 
 **Play:** https://tb-x.github.io/robot-spy/
 

@@ -179,9 +179,21 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .sheet{animation:none}
   .wanted{transition:none}
 }
+
+/* ---------- Home button (back to all games) ---------- */
+#home{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:calc(10px + env(safe-area-inset-left,0px));z-index:50;
+  width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:var(--text);background:var(--panel);
+  border:1px solid var(--line);box-sizing:border-box;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  box-shadow:0 3px 0 rgba(0,0,0,.18);touch-action:manipulation;-webkit-tap-highlight-color:transparent;text-decoration:none}
+#home svg{width:24px;height:24px}
+#home:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(0,0,0,.18)}
+/* the WANTED poster sits just under the button, and the toast moves down with it */
+.wanted{margin-top:54px}
+.toast{top:calc(env(safe-area-inset-top,0px) + 214px)}
 </style>
 </head>
 <body>
+<a id="home" href="../index.html" aria-label="All games" title="All games"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11 12 4l8.5 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9.8V20h12V9.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/><path d="M10 20v-5.5h4V20" fill="currentColor"/></svg></a>
 <canvas id="scene" aria-label="Isometric cyberpunk city with a crowd of walking robots"></canvas>
 
 <div class="hud" id="hud" hidden>
